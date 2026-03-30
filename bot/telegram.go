@@ -44,7 +44,7 @@ func newProxyClient() *http.Client {
 	}
 }
 
-func StartTelegram(ctx context.Context, incoming chan<- Message, outgoing <-chan string, errors chan<- error) {
+func StartTelegram(ctx context.Context, incoming chan<- Message, outgoing <-chan string, errors chan<- error, alarms chan<- struct{}) {
 	for {
 		token := loadToken()
 		ownerID, err := strconv.ParseInt(os.Getenv("OWNER_ID"), 10, 64)
@@ -75,6 +75,11 @@ func StartTelegram(ctx context.Context, incoming chan<- Message, outgoing <-chan
 					ChatID: update.Message.Chat.ID,
 					Text:   fmt.Sprintf("Извините, но я могу общаться только с владельцем бота. Ваш ID: %d.", chatID),
 				})
+				return
+			}
+
+			if update.Message.Text == "/alarm" {
+				alarms <- struct{}{}
 				return
 			}
 
