@@ -1,0 +1,31 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Go build
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go modules
+go.sum
+vendor/
+
+# Build and dist
+bin/
+dist/
+
+# OS files
+Thumbs.db
+.DS_Store
