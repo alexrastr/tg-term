@@ -29,7 +29,7 @@ func main() {
 
 	app := tview.NewApplication()
 
-	// [НОВОЕ] флаг: активна ли сейчас тревога (для остановки beep-горутины)
+	// флаг: активна ли сейчас тревога (для остановки beep-горутины)
 	var alarmActive atomic.Bool
 
 	// Окно чата (история сообщений)
@@ -98,6 +98,7 @@ func main() {
 	// входящие из Telegram → UI
 	go func() {
 		for msg := range incoming {
+			fmt.Print("\a") // сигнал для терминала при получении нового сообщения
 			app.QueueUpdateDraw(func() {
 				addMessage(msg.From, msg.Text)
 			})
