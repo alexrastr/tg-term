@@ -3,36 +3,41 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync/atomic"
 	"time"
 
 	"github.com/alexrastr/tg-term/bot"
+	"github.com/alexrastr/tg-term/storage"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
 func main() {
-
 	ctx := context.Background()
 
-	// === КАНАЛЫ ===
-	incoming := make(chan bot.Message, 100) // из Telegram в UI
-	outgoing := make(chan string, 100)      // из UI в Telegram
-	errors := make(chan error, 100)         // ошибки
-	alarms := make(chan struct{}, 10)       // [НОВОЕ] сигнал тревоги
+	store, err := storage.OpenMessageStore("data")
+	if err != nil {
+		log.Fatalf("failed to open message store: %v", err)
+	}
+	defer func() {
+		if closeErr := store.Close(); closeErr != nil {
+			log.Printf("failed to close message store: %v", closeErr)
+		}
+	}()
 
-	// === TELEGRAM BOT ===
-	// Бот должен слать в alarms когда получает /alarm.
-	// Передаём канал alarms в StartTelegram (нужно добавить поддержку в bot.go).
+	incoming := make(chan bot.Message, 100)
+	outgoing := make(chan string, 100)
+	errors := make(chan error, 100)
+	alarms := make(chan struct{}, 10)
+
 	go bot.StartTelegram(ctx, incoming, outgoing, errors, alarms)
 
 	app := tview.NewApplication()
 
-	// флаг: активна ли сейчас тревога (для остановки beep-горутины)
 	var alarmActive atomic.Bool
 
-	// Окно чата (история сообщений)
 	chatView := tview.NewTextView().
 		SetDynamicColors(true).
 		SetScrollable(false).
@@ -45,7 +50,6 @@ func main() {
 		SetBackgroundColor(tcell.ColorDefault).
 		SetBorder(true).SetTitle(" Chat ")
 
-	// Поле ввода
 	input := tview.NewInputField().
 		SetLabel(" > ").
 		SetFieldWidth(0)
@@ -55,27 +59,69 @@ func main() {
 		SetBackgroundColor(tcell.ColorDefault).
 		SetBorder(true)
 
-	// Функция добавления сообщения
-	addMessage := func(author, msg string) {
-		timestamp := time.Now().Format("15:04:05")
+	addMessageAt := func(author, msg string, ts time.Time) {
+		timestamp := ts.Format("15:04:05")
 		if chatView.GetText(false) != "" {
 			fmt.Fprint(chatView, "\n")
 		}
-		fmt.Fprintf(chatView, "[gray]%s [white]%s: %s",
-			timestamp, author, msg)
+		fmt.Fprintf(chatView, "[gray]%s [white]%s: %s", timestamp, author, msg)
 	}
 
-	// показать модальное окно тревоги и запустить beep
+	addMessage := func(author, msg string) {
+		addMessageAt(author, msg, time.Now())
+	}
+
+	clearHistory := func() error {
+		if err := store.Clear(); err != nil {
+			return err
+		}
+
+		chatView.SetText("")
+		return nil
+	}
+
+	handleMessage := func(author, text string, fromTelegram bool) {
+		if text == "/clear" {
+			if err := clearHistory(); err != nil {
+				addMessage("System", fmt.Sprintf("clear history: %v", err))
+				return
+			}
+
+			addMessage("System", "История очищена")
+			if fromTelegram {
+				outgoing <- "История очищена."
+			}
+			return
+		}
+
+		sentAt := time.Now()
+		addMessageAt(author, text, sentAt)
+		if err := store.Save(storage.MessageRecord{
+			Author:    author,
+			Text:      text,
+			Timestamp: sentAt,
+		}); err != nil {
+			addMessage("System", fmt.Sprintf("save message: %v", err))
+		}
+	}
+
+	history, err := store.LoadAll()
+	if err != nil {
+		log.Printf("failed to load message history: %v", err)
+	} else {
+		for _, record := range history {
+			addMessageAt(record.Author, record.Text, record.Timestamp)
+		}
+	}
+
 	showAlarmModal := func() {
-		// Если тревога уже активна — не показываем второй раз
 		if alarmActive.Swap(true) {
 			return
 		}
 
-		// Запускаем beep в отдельной горутине — системный bell на репите
 		go func() {
 			for alarmActive.Load() {
-				fmt.Print("\a") // ASCII BEL — системный звуковой сигнал
+				fmt.Print("\a")
 				time.Sleep(800 * time.Millisecond)
 			}
 		}()
@@ -84,7 +130,6 @@ func main() {
 			SetText("Новое сообщение").
 			AddButtons([]string{"OK (Enter)"}).
 			SetDoneFunc(func(_ int, _ string) {
-				// Остановить звук и убрать модалку
 				alarmActive.Store(false)
 				app.SetRoot(buildLayout(chatView, input), true).SetFocus(input)
 			})
@@ -95,12 +140,11 @@ func main() {
 		app.SetRoot(modal, true).SetFocus(modal)
 	}
 
-	// входящие из Telegram → UI
 	go func() {
 		for msg := range incoming {
-			fmt.Print("\a") // сигнал для терминала при получении нового сообщения
 			app.QueueUpdateDraw(func() {
-				addMessage(msg.From, msg.Text)
+				fmt.Print("\a")
+				handleMessage(msg.From, msg.Text, true)
 			})
 		}
 	}()
@@ -113,7 +157,6 @@ func main() {
 		}
 	}()
 
-	// слушаем канал alarms
 	go func() {
 		for range alarms {
 			app.QueueUpdateDraw(func() {
@@ -123,7 +166,6 @@ func main() {
 		}
 	}()
 
-	// время в заголовке
 	go func() {
 		for {
 			timeStr := time.Now().Format("15:04:05")
@@ -134,19 +176,25 @@ func main() {
 		}
 	}()
 
-	// Обработка Enter в поле ввода
 	input.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
-			text := input.GetText()
-			if text != "" {
-				addMessage("Вы", text)
-				input.SetText("")
-				outgoing <- text
-			}
+		if key != tcell.KeyEnter {
+			return
 		}
+
+		text := input.GetText()
+		if text == "" {
+			return
+		}
+
+		input.SetText("")
+		handleMessage("Вы", text, false)
+		if text == "/clear" {
+			return
+		}
+
+		outgoing <- text
 	})
 
-	// Глобальные горячие клавиши
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEsc {
 			app.Stop()
@@ -155,14 +203,12 @@ func main() {
 		return event
 	})
 
-	// Запуск
 	layout := buildLayout(chatView, input)
 	if err := app.SetRoot(layout, true).SetFocus(input).Run(); err != nil {
 		panic(err)
 	}
 }
 
-// buildLayout собирает основной layout (вынесено, чтобы переиспользовать после закрытия модалки)
 func buildLayout(chatView *tview.TextView, input *tview.InputField) *tview.Flex {
 	return tview.NewFlex().
 		SetDirection(tview.FlexRow).

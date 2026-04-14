@@ -7,6 +7,7 @@
 - terminal UI built with `tview` and `tcell`
 - incoming Telegram messages are shown in `chatView`
 - outgoing messages are sent from the input field on `Enter`
+- chat history is persisted locally in `BadgerDB` and capped at the latest 200 messages
 - `/alarm` triggers a modal window and repeating terminal bell
 - system and bot errors are rendered in the chat instead of only going to the console
 - access is limited to the configured bot owner
@@ -45,6 +46,7 @@ go run .
 ## How It Works
 
 - the upper panel is the chat history
+- previous messages are restored from the local database on startup
 - the bottom field is the input line
 - press `Enter` to send a message
 - press `Esc` to exit the app
@@ -71,6 +73,8 @@ If two processes start polling the same bot token at the same time, Telegram sto
 |-- main.go
 |-- bot/
 |   `-- telegram.go
+|-- storage/
+|   `-- messages.go
 |-- .env
 |-- env.example
 `-- README.md
@@ -80,4 +84,5 @@ If two processes start polling the same bot token at the same time, Telegram sto
 
 - only the configured `OWNER_ID` can talk to the bot through the terminal UI
 - unauthorized users receive a Telegram reply explaining that the bot is owner-only
+- messages are stored locally in `data/messages`, only the latest 200 are kept
 - after the bot stops, the app attempts to restart polling after a short delay
