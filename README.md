@@ -28,6 +28,7 @@ Create a `.env` file in the project root:
 BOT_TOKEN=1234567890:YOUR_BOT_TOKEN
 PROXY_URL=socks5://127.0.0.1:1080
 OWNER_ID=1234567890
+APP_LANG=ru
 ```
 
 Variables:
