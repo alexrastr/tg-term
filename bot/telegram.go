@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	"github.com/joho/godotenv"
 )
 
 type Message struct {
@@ -20,7 +18,9 @@ type Message struct {
 	Text string
 }
 
-func reportBotError(errors chan<- error) func(error) {
+type TranslateFunc func(key string) string
+
+func reportBotError(errors chan<- error, t TranslateFunc) func(error) {
 	return func(err error) {
 		if err == nil {
 			return
@@ -28,7 +28,7 @@ func reportBotError(errors chan<- error) func(error) {
 
 		msg := err.Error()
 		if strings.Contains(strings.ToLower(msg), "terminated by other getupdates request") {
-			errors <- fmt.Errorf("бот остановлен: этот токен уже используется в другом процессе")
+			errors <- fmt.Errorf("%s", t("bot_stopped_other_process"))
 			return
 		}
 
@@ -36,19 +36,7 @@ func reportBotError(errors chan<- error) func(error) {
 	}
 }
 
-func loadToken() (string, error) {
-	_ = godotenv.Load()
-
-	token := os.Getenv("BOT_TOKEN")
-	if token == "" {
-		return "", fmt.Errorf("BOT_TOKEN is not set in environment or .env file")
-	}
-
-	return token, nil
-}
-
-func newProxyClient() (*http.Client, error) {
-	proxyRaw := os.Getenv("PROXY_URL")
+func newProxyClient(proxyRaw string) (*http.Client, error) {
 	if proxyRaw == "" {
 		return &http.Client{
 			Timeout: 30 * time.Second,
@@ -70,21 +58,20 @@ func newProxyClient() (*http.Client, error) {
 	}, nil
 }
 
-func StartTelegram(ctx context.Context, incoming chan<- Message, outgoing <-chan string, errors chan<- error, alarms chan<- struct{}) {
+func StartTelegram(ctx context.Context, token string, proxy string, ownerID string, t TranslateFunc, incoming chan<- Message, outgoing <-chan string, errors chan<- error, alarms chan<- struct{}) {
 	for {
-		token, err := loadToken()
-		if err != nil {
-			errors <- err
+		if token == "" {
+			errors <- fmt.Errorf("%s", t("bot_token_not_set"))
 			return
 		}
 
-		ownerID, err := strconv.ParseInt(os.Getenv("OWNER_ID"), 10, 64)
+		ownerID_int64, err := strconv.ParseInt(ownerID, 10, 64)
 		if err != nil {
 			errors <- fmt.Errorf("OWNER_ID is missing or invalid, bot will not start")
 			return
 		}
 
-		client, err := newProxyClient()
+		client, err := newProxyClient(proxy)
 		if err != nil {
 			errors <- err
 		}
@@ -92,7 +79,7 @@ func StartTelegram(ctx context.Context, incoming chan<- Message, outgoing <-chan
 		b, err := bot.New(
 			token,
 			bot.WithHTTPClient(30*time.Second, client),
-			bot.WithErrorsHandler(reportBotError(errors)),
+			bot.WithErrorsHandler(reportBotError(errors, t)),
 		)
 		if err != nil {
 			errors <- fmt.Errorf("failed to initialize telegram bot: %w", err)
@@ -105,13 +92,13 @@ func StartTelegram(ctx context.Context, incoming chan<- Message, outgoing <-chan
 		b.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypeContains, func(ctx context.Context, b *bot.Bot, update *models.Update) {
 			chatID = update.Message.Chat.ID
 
-			if chatID != ownerID {
+			if chatID != ownerID_int64 {
 				_, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
 					ChatID: update.Message.Chat.ID,
-					Text:   fmt.Sprintf("Извините, но я могу общаться только с владельцем бота. Ваш ID: %d.", chatID),
+					Text:   fmt.Sprintf("%s %d.", t("unauthorized_user"), chatID),
 				})
 				if sendErr != nil {
-					errors <- fmt.Errorf("failed to send unauthorized-user message: %w", sendErr)
+					errors <- fmt.Errorf("%s: %w", t("not_sent"), sendErr)
 				}
 				return
 			}
@@ -127,21 +114,36 @@ func StartTelegram(ctx context.Context, incoming chan<- Message, outgoing <-chan
 			}
 		})
 
+		runCtx, cancelRun := context.WithCancel(ctx)
+		senderStopped := make(chan struct{})
 		go func() {
-			for text := range outgoing {
-				_, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: ownerID,
-					Text:   text,
-				})
-				if sendErr != nil {
-					errors <- fmt.Errorf("не отправлено: %s (%v)", text, sendErr)
+			defer close(senderStopped)
+
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case text, ok := <-outgoing:
+					if !ok {
+						return
+					}
+
+					_, sendErr := b.SendMessage(runCtx, &bot.SendMessageParams{
+						ChatID: ownerID_int64,
+						Text:   text,
+					})
+					if sendErr != nil && runCtx.Err() == nil {
+						errors <- fmt.Errorf("%s: %s (%v)", t("not_sent"), text, sendErr)
+					}
 				}
 			}
 		}()
 
 		b.Start(ctx)
+		cancelRun()
+		<-senderStopped
 
-		errors <- fmt.Errorf("telegram bot stopped, restarting in 5 seconds")
+		errors <- fmt.Errorf("%s", t("bot_stopped"))
 		time.Sleep(5 * time.Second)
 	}
 }

@@ -4,18 +4,43 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/alexrastr/tg-term/bot"
+	"github.com/alexrastr/tg-term/i18n"
 	"github.com/alexrastr/tg-term/storage"
+	"github.com/joho/godotenv"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
+type Config struct {
+	BotToken string
+	OwnerID  string
+	ProxyURL string
+	AppLang  string
+}
+
+func loadConfig() *Config {
+	_ = godotenv.Load()
+	return &Config{
+		BotToken: os.Getenv("BOT_TOKEN"),
+		OwnerID:  os.Getenv("OWNER_ID"),
+		ProxyURL: os.Getenv("PROXY_URL"),
+		AppLang:  os.Getenv("APP_LANG"),
+	}
+}
+
 func main() {
 	ctx := context.Background()
+
+	incoming := make(chan bot.Message, 100)
+	outgoing := make(chan string, 100)
+	errors := make(chan error, 100)
+	alarms := make(chan struct{}, 10)
 
 	store, err := storage.OpenMessageStore("data")
 	if err != nil {
@@ -27,16 +52,14 @@ func main() {
 		}
 	}()
 
-	incoming := make(chan bot.Message, 100)
-	outgoing := make(chan string, 100)
-	errors := make(chan error, 100)
-	alarms := make(chan struct{}, 10)
-
-	go bot.StartTelegram(ctx, incoming, outgoing, errors, alarms)
-
 	app := tview.NewApplication()
 
 	var alarmActive atomic.Bool
+
+	config := loadConfig()
+
+	i18n.Init(config.AppLang)
+	go bot.StartTelegram(ctx, config.BotToken, config.ProxyURL, config.OwnerID, i18n.T, incoming, outgoing, errors, alarms)
 
 	chatView := tview.NewTextView().
 		SetDynamicColors(true).
@@ -83,13 +106,13 @@ func main() {
 	handleMessage := func(author, text string, fromTelegram bool) {
 		if text == "/clear" {
 			if err := clearHistory(); err != nil {
-				addMessage("System", fmt.Sprintf("clear history: %v", err))
+				addMessage(i18n.T("system"), fmt.Sprintf("clear history: %v", err))
 				return
 			}
 
-			addMessage("System", "История очищена")
+			addMessage(i18n.T("system"), i18n.T("history_cleared"))
 			if fromTelegram {
-				outgoing <- "История очищена."
+				outgoing <- i18n.T("history_cleared")
 			}
 			return
 		}
@@ -101,13 +124,13 @@ func main() {
 			Text:      text,
 			Timestamp: sentAt,
 		}); err != nil {
-			addMessage("System", fmt.Sprintf("save message: %v", err))
+			addMessage(i18n.T("system"), fmt.Sprintf("save message: %v", err))
 		}
 	}
 
 	history, err := store.LoadAll()
 	if err != nil {
-		log.Printf("failed to load message history: %v", err)
+		addMessage(i18n.T("system"), fmt.Sprintf("failed to load message history: %v", err))
 	} else {
 		for _, record := range history {
 			addMessageAt(record.Author, record.Text, record.Timestamp)
@@ -127,8 +150,8 @@ func main() {
 		}()
 
 		modal := tview.NewModal().
-			SetText("Новое сообщение").
-			AddButtons([]string{"OK (Enter)"}).
+			SetText(i18n.T("new_message")).
+			AddButtons([]string{"Enter"}).
 			SetDoneFunc(func(_ int, _ string) {
 				alarmActive.Store(false)
 				app.SetRoot(buildLayout(chatView, input), true).SetFocus(input)
@@ -152,7 +175,7 @@ func main() {
 	go func() {
 		for err := range errors {
 			app.QueueUpdateDraw(func() {
-				addMessage("System", err.Error())
+				addMessage(i18n.T("system"), err.Error())
 			})
 		}
 	}()
@@ -160,7 +183,7 @@ func main() {
 	go func() {
 		for range alarms {
 			app.QueueUpdateDraw(func() {
-				addMessage("System", "/alarm получен")
+				addMessage(i18n.T("system"), i18n.T("new_alarm"))
 				showAlarmModal()
 			})
 		}
@@ -187,7 +210,7 @@ func main() {
 		}
 
 		input.SetText("")
-		handleMessage("Вы", text, false)
+		handleMessage(i18n.T("you"), text, false)
 		if text == "/clear" {
 			return
 		}

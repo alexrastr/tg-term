@@ -9,6 +9,7 @@
 - outgoing messages are sent from the input field on `Enter`
 - chat history is persisted locally in `BadgerDB` and capped at the latest 200 messages
 - `/alarm` triggers a modal window and repeating terminal bell
+- `/clear` clear chat
 - system and bot errors are rendered in the chat instead of only going to the console
 - access is limited to the configured bot owner
 
@@ -34,6 +35,7 @@ Variables:
 - `BOT_TOKEN` is required
 - `OWNER_ID` is required
 - `PROXY_URL` is optional; if empty, the bot uses a regular HTTP client without proxy
+- `APP_LANG` is optional; can be "ru"
 
 You can copy the template from `env.example`.
 
@@ -64,21 +66,6 @@ Runtime errors are sent to the chat as `System` messages. This includes:
 - Telegram polling failures reported by the library
 - conflict when the same bot token is used by another running process
 
-If two processes start polling the same bot token at the same time, Telegram stops one of them. In this project that situation is shown in the chat as a system error instead of only being printed to the console.
-
-## Project Structure
-
-```text
-.
-|-- main.go
-|-- bot/
-|   `-- telegram.go
-|-- storage/
-|   `-- messages.go
-|-- .env
-|-- env.example
-`-- README.md
-```
 
 ## Notes
 
