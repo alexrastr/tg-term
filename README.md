@@ -10,7 +10,7 @@
 - chat history is persisted locally in `BadgerDB` and capped at the latest 200 messages
 - `/alarm` triggers a modal window and repeating terminal bell
 - `/clear` clear chat
-- custom commands from `scripts.d/*.sh` are available as `/name args`
+- custom commands from `scripts.d/*.sh` and `scripts.d/*.ps1` are available as `/name args`
 - system and bot errors are rendered in the chat instead of only going to the console
 - access is limited to the configured bot owner
 
@@ -78,7 +78,14 @@ Runtime errors are sent to the chat as `System` messages. This includes:
 
 ## Custom Commands
 
-If a bash script exists in `scripts.d`, it becomes available as a slash-command with the script name:
+If a script exists in `scripts.d`, it becomes available as a slash-command with the script name.
+
+Supported formats:
+
+- `scripts.d/<name>.sh`
+- `scripts.d/<name>.ps1`
+
+Example bash script:
 
 ```bash
 scripts.d/hello.sh
@@ -107,10 +114,26 @@ This runs:
 scripts.d/light.sh on
 ```
 
+PowerShell works the same way:
+
+```powershell
+scripts.d/light.ps1
+```
+
+```powershell
+param(
+    [string]$State
+)
+
+Write-Output "light: $State"
+```
+
 Behavior:
 
 - local command execution prints the result into the terminal chat
 - Telegram command execution prints the result into the terminal chat and sends the result back to Telegram
 - if a script exits with an error, combined stdout/stderr is shown in chat
+- on Windows, if both `.ps1` and `.sh` exist for the same command, `.ps1` is preferred
 
-`bash` must be available in `PATH`.
+- `.sh` requires `bash` in `PATH`
+- `.ps1` uses `powershell -NoProfile -ExecutionPolicy Bypass -File`

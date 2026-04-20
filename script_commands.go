@@ -8,10 +8,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
 var scriptCommandName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+type scriptRunner struct {
+	path string
+	bin  string
+	args []string
+}
 
 func runScriptCommand(ctx context.Context, text string) (string, bool, error) {
 	if !strings.HasPrefix(text, "/") {
@@ -28,26 +35,16 @@ func runScriptCommand(ctx context.Context, text string) (string, bool, error) {
 		return "", false, nil
 	}
 
-	scriptPath := filepath.Join("scripts.d", commandName+".sh")
-	info, err := os.Stat(scriptPath)
+	runner, err := resolveScriptRunner(commandName)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", false, nil
 		}
-		return "", true, fmt.Errorf("script /%s is unavailable: %w", commandName, err)
+		return "", true, err
 	}
 
-	if info.IsDir() {
-		return "", true, fmt.Errorf("script /%s points to a directory", commandName)
-	}
-
-	bashPath, err := exec.LookPath("bash")
-	if err != nil {
-		return "", true, fmt.Errorf("bash is not available for /%s: %w", commandName, err)
-	}
-
-	args := append([]string{scriptPath}, fields[1:]...)
-	cmd := exec.CommandContext(ctx, bashPath, args...)
+	args := append(runner.args, fields[1:]...)
+	cmd := exec.CommandContext(ctx, runner.bin, args...)
 	cmd.Dir = "."
 
 	output, err := cmd.CombinedOutput()
@@ -64,4 +61,53 @@ func runScriptCommand(ctx context.Context, text string) (string, bool, error) {
 	}
 
 	return result, true, nil
+}
+
+func resolveScriptRunner(commandName string) (scriptRunner, error) {
+	for _, candidate := range scriptCandidates(commandName) {
+		info, err := os.Stat(candidate.path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return scriptRunner{}, fmt.Errorf("script /%s is unavailable: %w", commandName, err)
+		}
+
+		if info.IsDir() {
+			return scriptRunner{}, fmt.Errorf("script /%s points to a directory", commandName)
+		}
+
+		bin, err := exec.LookPath(candidate.bin)
+		if err != nil {
+			return scriptRunner{}, fmt.Errorf("%s is not available for /%s: %w", candidate.bin, commandName, err)
+		}
+
+		return scriptRunner{
+			path: candidate.path,
+			bin:  bin,
+			args: append(candidate.args, candidate.path),
+		}, nil
+	}
+
+	return scriptRunner{}, os.ErrNotExist
+}
+
+func scriptCandidates(commandName string) []scriptRunner {
+	baseDir := "scripts.d"
+	ps1 := scriptRunner{
+		path: filepath.Join(baseDir, commandName+".ps1"),
+		bin:  "powershell",
+		args: []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File"},
+	}
+	sh := scriptRunner{
+		path: filepath.Join(baseDir, commandName+".sh"),
+		bin:  "bash",
+		args: nil,
+	}
+
+	if runtime.GOOS == "windows" {
+		return []scriptRunner{ps1, sh}
+	}
+
+	return []scriptRunner{sh, ps1}
 }
