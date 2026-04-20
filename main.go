@@ -94,6 +94,21 @@ func main() {
 		addMessageAt(author, msg, time.Now())
 	}
 
+	saveMessage := func(author, msg string, ts time.Time) {
+		if err := store.Save(storage.MessageRecord{
+			Author:    author,
+			Text:      msg,
+			Timestamp: ts,
+		}); err != nil {
+			addMessage(i18n.T("system"), fmt.Sprintf("save message: %v", err))
+		}
+	}
+
+	addAndSaveMessageAt := func(author, msg string, ts time.Time) {
+		addMessageAt(author, msg, ts)
+		saveMessage(author, msg, ts)
+	}
+
 	clearHistory := func() error {
 		if err := store.Clear(); err != nil {
 			return err
@@ -103,29 +118,38 @@ func main() {
 		return nil
 	}
 
-	handleMessage := func(author, text string, fromTelegram bool) {
+	handleMessage := func(author, text string, fromTelegram bool) bool {
 		if text == "/clear" {
 			if err := clearHistory(); err != nil {
 				addMessage(i18n.T("system"), fmt.Sprintf("clear history: %v", err))
-				return
+				return true
 			}
 
 			addMessage(i18n.T("system"), i18n.T("history_cleared"))
 			if fromTelegram {
 				outgoing <- i18n.T("history_cleared")
 			}
-			return
+			return true
 		}
 
 		sentAt := time.Now()
-		addMessageAt(author, text, sentAt)
-		if err := store.Save(storage.MessageRecord{
-			Author:    author,
-			Text:      text,
-			Timestamp: sentAt,
-		}); err != nil {
-			addMessage(i18n.T("system"), fmt.Sprintf("save message: %v", err))
+		addAndSaveMessageAt(author, text, sentAt)
+
+		if result, handled, err := runScriptCommand(ctx, text); handled {
+			outputAt := time.Now()
+			response := result
+			if err != nil {
+				response = err.Error()
+			}
+
+			addAndSaveMessageAt(i18n.T("system"), response, outputAt)
+			if fromTelegram {
+				outgoing <- response
+			}
+			return true
 		}
+
+		return false
 	}
 
 	history, err := store.LoadAll()
@@ -167,7 +191,7 @@ func main() {
 		for msg := range incoming {
 			app.QueueUpdateDraw(func() {
 				fmt.Print("\a")
-				handleMessage(msg.From, msg.Text, true)
+				_ = handleMessage(msg.From, msg.Text, true)
 			})
 		}
 	}()
@@ -210,8 +234,7 @@ func main() {
 		}
 
 		input.SetText("")
-		handleMessage(i18n.T("you"), text, false)
-		if text == "/clear" {
+		if handled := handleMessage(i18n.T("you"), text, false); handled {
 			return
 		}
 

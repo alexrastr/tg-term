@@ -10,6 +10,7 @@
 - chat history is persisted locally in `BadgerDB` and capped at the latest 200 messages
 - `/alarm` triggers a modal window and repeating terminal bell
 - `/clear` clear chat
+- custom commands from `scripts.d/*.sh` are available as `/name args`
 - system and bot errors are rendered in the chat instead of only going to the console
 - access is limited to the configured bot owner
 
@@ -74,3 +75,42 @@ Runtime errors are sent to the chat as `System` messages. This includes:
 - unauthorized users receive a Telegram reply explaining that the bot is owner-only
 - messages are stored locally in `data/messages`, only the latest 200 are kept
 - after the bot stops, the app attempts to restart polling after a short delay
+
+## Custom Commands
+
+If a bash script exists in `scripts.d`, it becomes available as a slash-command with the script name:
+
+```bash
+scripts.d/hello.sh
+```
+
+```bash
+#!/bin/bash
+echo "hello!"
+```
+
+Then:
+
+```text
+/hello
+```
+
+Arguments are passed through as-is:
+
+```text
+/light on
+```
+
+This runs:
+
+```bash
+scripts.d/light.sh on
+```
+
+Behavior:
+
+- local command execution prints the result into the terminal chat
+- Telegram command execution prints the result into the terminal chat and sends the result back to Telegram
+- if a script exits with an error, combined stdout/stderr is shown in chat
+
+`bash` must be available in `PATH`.
