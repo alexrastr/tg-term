@@ -40,6 +40,7 @@ Variables:
 - `PROXY_URL` is optional; if empty, the bot uses a regular HTTP client without proxy
 - `APP_LANG` is optional; can be "ru"
 - `ALERT_SOUND` is optional; supported values: `terminal`, `pc-speaker`, `off`
+  - on Linux, `pc-speaker` tries the `beep` utility first, then a direct console speaker ioctl; if neither is available, it falls back to the terminal bell
 
 You can copy the template from `env.example`.
 

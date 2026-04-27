@@ -17,6 +17,8 @@
 *.dll
 *.so
 *.dylib
+.gocache
+.gomodcache
 
 # Go modules
 go.sum
