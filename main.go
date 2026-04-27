@@ -18,19 +18,21 @@ import (
 )
 
 type Config struct {
-	BotToken string
-	OwnerID  string
-	ProxyURL string
-	AppLang  string
+	BotToken   string
+	OwnerID    string
+	ProxyURL   string
+	AppLang    string
+	AlertSound string
 }
 
 func loadConfig() *Config {
 	_ = godotenv.Load()
 	return &Config{
-		BotToken: os.Getenv("BOT_TOKEN"),
-		OwnerID:  os.Getenv("OWNER_ID"),
-		ProxyURL: os.Getenv("PROXY_URL"),
-		AppLang:  os.Getenv("APP_LANG"),
+		BotToken:   os.Getenv("BOT_TOKEN"),
+		OwnerID:    os.Getenv("OWNER_ID"),
+		ProxyURL:   os.Getenv("PROXY_URL"),
+		AppLang:    os.Getenv("APP_LANG"),
+		AlertSound: os.Getenv("ALERT_SOUND"),
 	}
 }
 
@@ -57,6 +59,7 @@ func main() {
 	var alarmActive atomic.Bool
 
 	config := loadConfig()
+	notifier := newNotifier(config.AlertSound)
 
 	i18n.Init(config.AppLang)
 	go bot.StartTelegram(ctx, config.BotToken, config.ProxyURL, config.OwnerID, i18n.T, incoming, outgoing, errors, alarms)
@@ -168,7 +171,7 @@ func main() {
 
 		go func() {
 			for alarmActive.Load() {
-				fmt.Print("\a")
+				notifier.Play()
 				time.Sleep(800 * time.Millisecond)
 			}
 		}()
@@ -190,7 +193,7 @@ func main() {
 	go func() {
 		for msg := range incoming {
 			app.QueueUpdateDraw(func() {
-				fmt.Print("\a")
+				notifier.Play()
 				_ = handleMessage(msg.From, msg.Text, true)
 			})
 		}

@@ -8,7 +8,7 @@
 - incoming Telegram messages are shown in `chatView`
 - outgoing messages are sent from the input field on `Enter`
 - chat history is persisted locally in `BadgerDB` and capped at the latest 200 messages
-- `/alarm` triggers a modal window and repeating terminal bell
+- `/alarm` triggers a modal window and repeating alert sound
 - `/clear` clear chat
 - custom commands from `scripts.d/*.sh` and `scripts.d/*.ps1` are available as `/name args`
 - system and bot errors are rendered in the chat instead of only going to the console
@@ -30,6 +30,7 @@ BOT_TOKEN=1234567890:YOUR_BOT_TOKEN
 PROXY_URL=socks5://127.0.0.1:1080
 OWNER_ID=1234567890
 APP_LANG=ru
+ALERT_SOUND=terminal
 ```
 
 Variables:
@@ -38,6 +39,7 @@ Variables:
 - `OWNER_ID` is required
 - `PROXY_URL` is optional; if empty, the bot uses a regular HTTP client without proxy
 - `APP_LANG` is optional; can be "ru"
+- `ALERT_SOUND` is optional; supported values: `terminal`, `pc-speaker`, `off`
 
 You can copy the template from `env.example`.
 
@@ -54,8 +56,8 @@ go run .
 - the bottom field is the input line
 - press `Enter` to send a message
 - press `Esc` to exit the app
-- each incoming message plays a terminal bell
-- when `/alarm` is received, the app shows a modal and repeats the bell until you confirm with `Enter`
+- each incoming message plays the configured alert sound
+- when `/alarm` is received, the app shows a modal and repeats the configured sound until you confirm with `Enter`
 
 ## Error Handling
 
