@@ -31,6 +31,8 @@ PROXY_URL=socks5://127.0.0.1:1080
 OWNER_ID=1234567890
 APP_LANG=ru
 ALERT_SOUND=terminal
+TELEGRAM_LOG_OUTPUT=screen
+TELEGRAM_LOG_FILE=data/telegram.log
 ```
 
 Variables:
@@ -41,6 +43,10 @@ Variables:
 - `APP_LANG` is optional; can be "ru"
 - `ALERT_SOUND` is optional; supported values: `terminal`, `pc-speaker`, `off`
   - on Linux, `pc-speaker` tries the `beep` utility first, then a direct console speaker ioctl; if neither is available, it falls back to the terminal bell
+- `TELEGRAM_LOG_OUTPUT` is optional; supported values: `screen`, `file`
+  - `screen` keeps Telegram bot runtime messages in the chat window as before
+  - `file` writes Telegram bot runtime messages to `TELEGRAM_LOG_FILE`
+- `TELEGRAM_LOG_FILE` is optional; default is `data/telegram.log`
 
 You can copy the template from `env.example`.
 

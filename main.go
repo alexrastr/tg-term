@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,22 +20,77 @@ import (
 )
 
 type Config struct {
-	BotToken   string
-	OwnerID    string
-	ProxyURL   string
-	AppLang    string
-	AlertSound string
+	BotToken          string
+	OwnerID           string
+	ProxyURL          string
+	AppLang           string
+	AlertSound        string
+	TelegramLogOutput string
+	TelegramLogFile   string
 }
 
 func loadConfig() *Config {
 	_ = godotenv.Load()
 	return &Config{
-		BotToken:   os.Getenv("BOT_TOKEN"),
-		OwnerID:    os.Getenv("OWNER_ID"),
-		ProxyURL:   os.Getenv("PROXY_URL"),
-		AppLang:    os.Getenv("APP_LANG"),
-		AlertSound: os.Getenv("ALERT_SOUND"),
+		BotToken:          os.Getenv("BOT_TOKEN"),
+		OwnerID:           os.Getenv("OWNER_ID"),
+		ProxyURL:          os.Getenv("PROXY_URL"),
+		AppLang:           os.Getenv("APP_LANG"),
+		AlertSound:        os.Getenv("ALERT_SOUND"),
+		TelegramLogOutput: os.Getenv("TELEGRAM_LOG_OUTPUT"),
+		TelegramLogFile:   os.Getenv("TELEGRAM_LOG_FILE"),
 	}
+}
+
+type telegramLogWriter struct {
+	output string
+	file   *os.File
+}
+
+func newTelegramLogWriter(config *Config) (*telegramLogWriter, error) {
+	output := strings.ToLower(strings.TrimSpace(config.TelegramLogOutput))
+	if output == "" {
+		output = "screen"
+	}
+
+	writer := &telegramLogWriter{output: output}
+	if output != "file" {
+		return writer, nil
+	}
+
+	logPath := strings.TrimSpace(config.TelegramLogFile)
+	if logPath == "" {
+		logPath = filepath.Join("data", "telegram.log")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to prepare telegram log dir: %w", err)
+	}
+
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open telegram log file: %w", err)
+	}
+
+	writer.file = file
+	return writer, nil
+}
+
+func (w *telegramLogWriter) Close() error {
+	if w == nil || w.file == nil {
+		return nil
+	}
+
+	return w.file.Close()
+}
+
+func (w *telegramLogWriter) WriteLine(line string) error {
+	if w == nil || w.output != "file" || w.file == nil {
+		return nil
+	}
+
+	_, err := fmt.Fprintf(w.file, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), line)
+	return err
 }
 
 func main() {
@@ -60,6 +117,15 @@ func main() {
 
 	config := loadConfig()
 	notifier := newNotifier(config.AlertSound)
+	telegramLogWriter, err := newTelegramLogWriter(config)
+	if err != nil {
+		log.Fatalf("failed to initialize telegram log writer: %v", err)
+	}
+	defer func() {
+		if closeErr := telegramLogWriter.Close(); closeErr != nil {
+			log.Printf("failed to close telegram log writer: %v", closeErr)
+		}
+	}()
 
 	i18n.Init(config.AppLang)
 	go bot.StartTelegram(ctx, config.BotToken, config.ProxyURL, config.OwnerID, i18n.T, incoming, outgoing, errors, alarms)
@@ -202,6 +268,14 @@ func main() {
 	go func() {
 		for err := range errors {
 			app.QueueUpdateDraw(func() {
+				if telegramLogWriter.output == "file" {
+					if writeErr := telegramLogWriter.WriteLine(err.Error()); writeErr != nil {
+						addMessage(i18n.T("system"), fmt.Sprintf("telegram log write: %v", writeErr))
+						addMessage(i18n.T("system"), err.Error())
+					}
+					return
+				}
+
 				addMessage(i18n.T("system"), err.Error())
 			})
 		}
