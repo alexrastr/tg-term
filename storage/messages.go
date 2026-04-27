@@ -26,7 +26,7 @@ type MessageStore struct {
 
 func OpenMessageStore(baseDir string) (*MessageStore, error) {
 	dbPath := filepath.Join(baseDir, "messages")
-	db, err := badger.Open(badger.DefaultOptions(dbPath))
+	db, err := badger.Open(badger.DefaultOptions(dbPath).WithLogger(nil))
 	if err != nil {
 		return nil, fmt.Errorf("open badger db: %w", err)
 	}

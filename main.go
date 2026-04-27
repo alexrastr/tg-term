@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +47,7 @@ func loadConfig() *Config {
 type telegramLogWriter struct {
 	output string
 	file   *os.File
+	mu     sync.Mutex
 }
 
 func newTelegramLogWriter(config *Config) (*telegramLogWriter, error) {
@@ -89,12 +92,54 @@ func (w *telegramLogWriter) WriteLine(line string) error {
 		return nil
 	}
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	_, err := fmt.Fprintf(w.file, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), line)
 	return err
 }
 
+func (w *telegramLogWriter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\r\n")
+	if err := w.WriteLine(line); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func configureStdLogger(writer *telegramLogWriter) {
+	log.SetFlags(log.LstdFlags)
+	if writer != nil && writer.output == "file" {
+		log.SetOutput(writer)
+		return
+	}
+
+	log.SetOutput(io.Discard)
+}
+
+func failStartup(writer *telegramLogWriter, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if writer != nil {
+		_ = writer.WriteLine(msg)
+	}
+	os.Exit(1)
+}
+
 func main() {
 	ctx := context.Background()
+
+	config := loadConfig()
+	telegramLogWriter, err := newTelegramLogWriter(config)
+	if err != nil {
+		failStartup(nil, "failed to initialize telegram log writer: %v", err)
+	}
+	defer func() {
+		if closeErr := telegramLogWriter.Close(); closeErr != nil {
+			_ = telegramLogWriter.WriteLine(fmt.Sprintf("failed to close telegram log writer: %v", closeErr))
+		}
+	}()
+
+	configureStdLogger(telegramLogWriter)
 
 	incoming := make(chan bot.Message, 100)
 	outgoing := make(chan string, 100)
@@ -103,11 +148,11 @@ func main() {
 
 	store, err := storage.OpenMessageStore("data")
 	if err != nil {
-		log.Fatalf("failed to open message store: %v", err)
+		failStartup(telegramLogWriter, "failed to open message store: %v", err)
 	}
 	defer func() {
 		if closeErr := store.Close(); closeErr != nil {
-			log.Printf("failed to close message store: %v", closeErr)
+			_ = telegramLogWriter.WriteLine(fmt.Sprintf("failed to close message store: %v", closeErr))
 		}
 	}()
 
@@ -115,19 +160,11 @@ func main() {
 
 	var alarmActive atomic.Bool
 
-	config := loadConfig()
 	notifier := newNotifier(config.AlertSound)
-	telegramLogWriter, err := newTelegramLogWriter(config)
-	if err != nil {
-		log.Fatalf("failed to initialize telegram log writer: %v", err)
-	}
-	defer func() {
-		if closeErr := telegramLogWriter.Close(); closeErr != nil {
-			log.Printf("failed to close telegram log writer: %v", closeErr)
-		}
-	}()
 
-	i18n.Init(config.AppLang)
+	if err := i18n.Init(config.AppLang); err != nil {
+		failStartup(telegramLogWriter, "failed to initialize translations: %v", err)
+	}
 	go bot.StartTelegram(ctx, config.BotToken, config.ProxyURL, config.OwnerID, i18n.T, incoming, outgoing, errors, alarms)
 
 	chatView := tview.NewTextView().
@@ -328,7 +365,8 @@ func main() {
 
 	layout := buildLayout(chatView, input)
 	if err := app.SetRoot(layout, true).SetFocus(input).Run(); err != nil {
-		panic(err)
+		_ = telegramLogWriter.WriteLine(fmt.Sprintf("application stopped with error: %v", err))
+		os.Exit(1)
 	}
 }
 

@@ -9,15 +9,15 @@ import (
 
 var localizer *i18n.Localizer
 
-func Init(lang string) {
+func Init(lang string) error {
 	bundle := i18n.NewBundle(language.English)
 	bundle.RegisterUnmarshalFunc("toml", toml.Unmarshal)
 
 	if _, err := bundle.LoadMessageFile("i18n/en.toml"); err != nil {
-		panic(err)
+		return err
 	}
 	if _, err := bundle.LoadMessageFile("i18n/ru.toml"); err != nil {
-		panic(err)
+		return err
 	}
 
 	if lang == "" {
@@ -25,6 +25,7 @@ func Init(lang string) {
 	}
 
 	localizer = i18n.NewLocalizer(bundle, lang, language.English.String())
+	return nil
 }
 
 func T(key string) string {
