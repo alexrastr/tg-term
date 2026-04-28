@@ -12,7 +12,9 @@ import (
 )
 
 const messagePrefix = "message:"
+const localInputPrefix = "local_input:"
 const maxMessages = 200
+const maxLocalInputs = 100
 
 type MessageRecord struct {
 	Author    string    `json:"author"`
@@ -52,10 +54,36 @@ func (s *MessageStore) Save(record MessageRecord) error {
 			return err
 		}
 
-		return trimToLimitTxn(txn)
+		return trimToLimitTxn(txn, []byte(messagePrefix), maxMessages)
 	})
 	if err != nil {
 		return fmt.Errorf("save message: %w", err)
+	}
+
+	return nil
+}
+
+func (s *MessageStore) SaveLocalInput(text string, ts time.Time) error {
+	record := MessageRecord{
+		Text:      text,
+		Timestamp: ts,
+	}
+
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal local input: %w", err)
+	}
+
+	key := []byte(localInputPrefix + strconv.FormatInt(ts.UnixNano(), 10))
+	err = s.db.Update(func(txn *badger.Txn) error {
+		if err := txn.Set(key, payload); err != nil {
+			return err
+		}
+
+		return trimToLimitTxn(txn, []byte(localInputPrefix), maxLocalInputs)
+	})
+	if err != nil {
+		return fmt.Errorf("save local input: %w", err)
 	}
 
 	return nil
@@ -98,20 +126,38 @@ func (s *MessageStore) LoadAll() ([]MessageRecord, error) {
 	return records, nil
 }
 
+func (s *MessageStore) LoadLocalInputs() ([]string, error) {
+	records := make([]MessageRecord, 0)
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		return loadRecordsByPrefix(txn, []byte(localInputPrefix), &records)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load local inputs: %w", err)
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Timestamp.Before(records[j].Timestamp)
+	})
+
+	inputs := make([]string, 0, len(records))
+	for _, record := range records {
+		if record.Text == "" {
+			continue
+		}
+		inputs = append(inputs, record.Text)
+	}
+
+	return inputs, nil
+}
+
 func (s *MessageStore) Clear() error {
 	err := s.db.Update(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-
-		prefix := []byte(messagePrefix)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			key := it.Item().KeyCopy(nil)
-			if err := txn.Delete(key); err != nil {
-				return err
-			}
+		if err := deleteByPrefix(txn, []byte(messagePrefix)); err != nil {
+			return err
 		}
 
-		return nil
+		return deleteByPrefix(txn, []byte(localInputPrefix))
 	})
 	if err != nil {
 		return fmt.Errorf("clear messages: %w", err)
@@ -130,7 +176,11 @@ func (s *MessageStore) Close() error {
 
 func (s *MessageStore) trimToLimit() error {
 	err := s.db.Update(func(txn *badger.Txn) error {
-		return trimToLimitTxn(txn)
+		if err := trimToLimitTxn(txn, []byte(messagePrefix), maxMessages); err != nil {
+			return err
+		}
+
+		return trimToLimitTxn(txn, []byte(localInputPrefix), maxLocalInputs)
 	})
 	if err != nil {
 		return fmt.Errorf("trim messages: %w", err)
@@ -139,19 +189,55 @@ func (s *MessageStore) trimToLimit() error {
 	return nil
 }
 
-func trimToLimitTxn(txn *badger.Txn) error {
-	keys := make([][]byte, 0, maxMessages+1)
+func loadRecordsByPrefix(txn *badger.Txn, prefix []byte, records *[]MessageRecord) error {
+	it := txn.NewIterator(badger.DefaultIteratorOptions)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		item := it.Item()
+		err := item.Value(func(val []byte) error {
+			var record MessageRecord
+			if err := json.Unmarshal(val, &record); err != nil {
+				return fmt.Errorf("unmarshal message: %w", err)
+			}
+
+			*records = append(*records, record)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func deleteByPrefix(txn *badger.Txn, prefix []byte) error {
+	it := txn.NewIterator(badger.DefaultIteratorOptions)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		key := it.Item().KeyCopy(nil)
+		if err := txn.Delete(key); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func trimToLimitTxn(txn *badger.Txn, prefix []byte, limit int) error {
+	keys := make([][]byte, 0, limit+1)
 
 	it := txn.NewIterator(badger.DefaultIteratorOptions)
 	defer it.Close()
 
-	prefix := []byte(messagePrefix)
 	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 		key := it.Item().KeyCopy(nil)
 		keys = append(keys, key)
 	}
 
-	excess := len(keys) - maxMessages
+	excess := len(keys) - limit
 	if excess <= 0 {
 		return nil
 	}

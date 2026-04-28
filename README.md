@@ -11,6 +11,7 @@
 - `/alarm` triggers a modal window and repeating alert sound
 - `/clear` clear chat
 - custom commands from `scripts.d/*.sh` and `scripts.d/*.ps1` are available as `/name args`
+- optional HTTP inbox for local network alerts (for example from Home Assistant)
 - system and bot errors are rendered in the chat instead of only going to the console
 - access is limited to the configured bot owner
 
@@ -33,6 +34,9 @@ APP_LANG=ru
 ALERT_SOUND=terminal
 TELEGRAM_LOG_OUTPUT=screen
 TELEGRAM_LOG_FILE=data/telegram.log
+HTTP_LISTEN_ADDR=:8088
+HTTP_INBOX_PATH=/message
+HTTP_INBOX_TOKEN=
 ```
 
 Variables:
@@ -47,6 +51,9 @@ Variables:
   - `screen` keeps Telegram bot runtime messages in the chat window as before
   - `file` writes Telegram bot runtime messages to `TELEGRAM_LOG_FILE`
 - `TELEGRAM_LOG_FILE` is optional; default is `data/telegram.log`
+- `HTTP_LISTEN_ADDR` is optional; if empty, the HTTP inbox is disabled
+- `HTTP_INBOX_PATH` is optional; default is `/message`
+- `HTTP_INBOX_TOKEN` is optional; if set, each request must provide the token in `X-Auth-Token`, `Authorization: Bearer ...`, or `?token=...`
 
 You can copy the template from `env.example`.
 
@@ -65,6 +72,7 @@ go run .
 - press `Esc` to exit the app
 - each incoming message plays the configured alert sound
 - when `/alarm` is received, the app shows a modal and repeats the configured sound until you confirm with `Enter`
+- when the HTTP inbox receives a message, it appears in the terminal chat and is forwarded to the Telegram bot owner
 
 ## Error Handling
 
@@ -84,6 +92,50 @@ Runtime errors are sent to the chat as `System` messages. This includes:
 - unauthorized users receive a Telegram reply explaining that the bot is owner-only
 - messages are stored locally in `data/messages`, only the latest 200 are kept
 - after the bot stops, the app attempts to restart polling after a short delay
+
+## HTTP Inbox
+
+If `HTTP_LISTEN_ADDR` is set, the app starts a small HTTP server for local automations.
+
+Default endpoint:
+
+```text
+POST /message
+```
+
+Plain text body is supported:
+
+```bash
+curl -X POST http://127.0.0.1:8088/message \
+  --data "Temperature is too low in the garage"
+```
+
+JSON is also supported:
+
+```bash
+curl -X POST http://127.0.0.1:8088/message \
+  -H "Content-Type: application/json" \
+  -d '{"from":"Home Assistant","text":"Temperature is too low in the garage","alarm":true}'
+```
+
+Behavior:
+
+- `text` or `message` is required in JSON
+- `from` is optional and is shown as the message author in the terminal chat
+- `alarm: true` additionally triggers the same alarm popup/sound as `/alarm`
+- every accepted HTTP message is shown in the terminal chat and forwarded to the Telegram owner chat
+
+Example Home Assistant `rest_command`:
+
+```yaml
+rest_command:
+  tg_term_alert:
+    url: "http://192.168.1.10:8088/message"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"from":"Home Assistant","text":"Low temperature: {{ states('sensor.garage_temperature') }} C","alarm":true}
+```
 
 ## Custom Commands
 

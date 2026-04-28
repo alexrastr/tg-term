@@ -29,6 +29,9 @@ type Config struct {
 	AlertSound        string
 	TelegramLogOutput string
 	TelegramLogFile   string
+	HTTPListenAddr    string
+	HTTPInboxPath     string
+	HTTPInboxToken    string
 }
 
 func loadConfig() *Config {
@@ -41,6 +44,9 @@ func loadConfig() *Config {
 		AlertSound:        os.Getenv("ALERT_SOUND"),
 		TelegramLogOutput: os.Getenv("TELEGRAM_LOG_OUTPUT"),
 		TelegramLogFile:   os.Getenv("TELEGRAM_LOG_FILE"),
+		HTTPListenAddr:    os.Getenv("HTTP_LISTEN_ADDR"),
+		HTTPInboxPath:     os.Getenv("HTTP_INBOX_PATH"),
+		HTTPInboxToken:    os.Getenv("HTTP_INBOX_TOKEN"),
 	}
 }
 
@@ -126,7 +132,8 @@ func failStartup(writer *telegramLogWriter, format string, args ...interface{}) 
 }
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	config := loadConfig()
 	telegramLogWriter, err := newTelegramLogWriter(config)
@@ -142,6 +149,7 @@ func main() {
 	configureStdLogger(telegramLogWriter)
 
 	incoming := make(chan bot.Message, 100)
+	httpIncoming := make(chan HTTPInboxMessage, 100)
 	outgoing := make(chan string, 100)
 	errors := make(chan error, 100)
 	alarms := make(chan struct{}, 10)
@@ -166,6 +174,9 @@ func main() {
 		failStartup(telegramLogWriter, "failed to initialize translations: %v", err)
 	}
 	go bot.StartTelegram(ctx, config.BotToken, config.ProxyURL, config.OwnerID, i18n.T, incoming, outgoing, errors, alarms)
+	if err := startHTTPInbox(ctx, config, httpIncoming, errors); err != nil {
+		failStartup(telegramLogWriter, "failed to start HTTP inbox: %v", err)
+	}
 
 	chatView := tview.NewTextView().
 		SetDynamicColors(true).
@@ -188,6 +199,10 @@ func main() {
 		SetBackgroundColor(tcell.ColorDefault).
 		SetBorder(true)
 
+	localInputHistory := make([]string, 0)
+	localInputIndex := 0
+	localInputDraft := ""
+
 	addMessageAt := func(author, msg string, ts time.Time) {
 		timestamp := ts.Format("15:04:05")
 		if chatView.GetText(false) != "" {
@@ -198,6 +213,22 @@ func main() {
 
 	addMessage := func(author, msg string) {
 		addMessageAt(author, msg, time.Now())
+	}
+
+	formatRemoteAuthor := func(source string) string {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			return "HTTP"
+		}
+		return source
+	}
+
+	formatRemoteRelayText := func(msg HTTPInboxMessage) string {
+		source := strings.TrimSpace(msg.From)
+		if source == "" {
+			return msg.Text
+		}
+		return fmt.Sprintf("[%s] %s", source, msg.Text)
 	}
 
 	saveMessage := func(author, msg string, ts time.Time) {
@@ -220,6 +251,9 @@ func main() {
 			return err
 		}
 
+		localInputHistory = localInputHistory[:0]
+		localInputIndex = 0
+		localInputDraft = ""
 		chatView.SetText("")
 		return nil
 	}
@@ -267,6 +301,44 @@ func main() {
 		}
 	}
 
+	localInputHistory, err = store.LoadLocalInputs()
+	if err != nil {
+		addMessage(i18n.T("system"), fmt.Sprintf("failed to load local input history: %v", err))
+	}
+	localInputIndex = len(localInputHistory)
+
+	input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyUp:
+			if len(localInputHistory) == 0 {
+				return nil
+			}
+			if localInputIndex == len(localInputHistory) {
+				localInputDraft = input.GetText()
+			}
+			if localInputIndex > 0 {
+				localInputIndex--
+			}
+			input.SetText(localInputHistory[localInputIndex])
+			return nil
+		case tcell.KeyDown:
+			if len(localInputHistory) == 0 {
+				return nil
+			}
+			if localInputIndex < len(localInputHistory) {
+				localInputIndex++
+			}
+			if localInputIndex == len(localInputHistory) {
+				input.SetText(localInputDraft)
+			} else {
+				input.SetText(localInputHistory[localInputIndex])
+			}
+			return nil
+		default:
+			return event
+		}
+	})
+
 	showAlarmModal := func() {
 		if alarmActive.Swap(true) {
 			return
@@ -298,6 +370,20 @@ func main() {
 			app.QueueUpdateDraw(func() {
 				notifier.Play()
 				_ = handleMessage(msg.From, msg.Text, true)
+			})
+		}
+	}()
+
+	go func() {
+		for msg := range httpIncoming {
+			app.QueueUpdateDraw(func() {
+				notifier.Play()
+				sentAt := time.Now()
+				addAndSaveMessageAt(formatRemoteAuthor(msg.From), msg.Text, sentAt)
+				outgoing <- formatRemoteRelayText(msg)
+				if msg.Alarm {
+					alarms <- struct{}{}
+				}
 			})
 		}
 	}()
@@ -345,6 +431,15 @@ func main() {
 		text := input.GetText()
 		if text == "" {
 			return
+		}
+
+		sentAt := time.Now()
+		if err := store.SaveLocalInput(text, sentAt); err != nil {
+			addMessage(i18n.T("system"), fmt.Sprintf("save local input: %v", err))
+		} else {
+			localInputHistory = append(localInputHistory, text)
+			localInputIndex = len(localInputHistory)
+			localInputDraft = ""
 		}
 
 		input.SetText("")
